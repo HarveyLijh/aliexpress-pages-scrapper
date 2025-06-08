@@ -14,23 +14,26 @@ from time import sleep
 import random
 
 # Search for electronics products on AliExpress
-url = "https://www.aliexpress.com/wholesale?SearchText=electronics"
+kw='headphones'
+num=1
+url = f"https://www.aliexpress.com/w/wholesale-{kw}.html?page={num}&g=y&SearchText=electronics"
 products = []
 
 def export_data_to_csv():
     global products
-    data = {"Title": [], "Rev_Rate": [], "Sold": [], "Shipping": [], "Price": []}
+    data = {"Title": [], "Rev_Rate": [], "Sold": [], "Shipping": [], "Price": [], "Image": []}
     for product in products:
         data["Title"].append(product.title)
         data["Rev_Rate"].append(product.rev_rate)
         data["Sold"].append(product.Sold)
         data["Shipping"].append(product.shipping)
         data["Price"].append(product.price)
+        data["Image"].append(product.image_link if hasattr(product, 'image_link') else "N/A")
     df = pd.DataFrame(data)
     df.to_csv('aliexpress_products.csv', index=False)
 
 
-def get_url_page():
+def get_url_page(url):
     options = Options()
     options.headless = False
     
@@ -68,7 +71,7 @@ def get_url_page():
     try:
         driver.get(url)
         sleep(5)  # Wait for page to load
-        
+    
         # Check if we hit a captcha or block page
         page_text = driver.page_source.lower()
         if any(blocked_term in page_text for blocked_term in ['captcha', 'robot', 'verification', 'blocked', 'suspicious']):
@@ -188,16 +191,19 @@ def scrap_products(soup_object):
             # Extract orders/sold info
             orders_text = extract_product_orders(product_element)
 
+            image_links=extract_image_links(product_element)
+
             # Clean and validate extracted data
             title_text = clean_text(title_text) if title_text else f"Product {i+1}"
             price_text = clean_text(price_text) if price_text else "N/A"
             rating_text = clean_text(rating_text) if rating_text else "N/A"
             shipping_text = clean_text(shipping_text) if shipping_text else "N/A"
             orders_text = clean_text(orders_text) if orders_text else "N/A"
+            image_links_text = f'[{", ".join(image_links)}]' if image_links else "N/A"
 
             # Only add products with meaningful data
             if title_text and title_text != f"Product {i+1}":
-                product_object = Product(title_text, rating_text, orders_text, shipping_text, price_text)
+                product_object = Product(title_text, rating_text, orders_text, shipping_text, price_text, image_links_text)
                 product_object.description()
                 products.append(product_object)
                 print(f"-> Extracted: {title_text[:50]}... - {price_text}")
@@ -352,6 +358,29 @@ def extract_product_orders(element):
     return None
 
 
+def extract_image_links(element):
+    """
+    Extract all product image URLs from a container div with style="transform: translateX(0%);"
+    """
+    image_links = []
+    image_wrappers = element.find_all("div", style="transform: translateX(0%);")
+
+    for wrapper in image_wrappers:
+        img_tags = wrapper.find_all("img", class_="mn_bc")
+        for img in img_tags:
+            src = img.get("src")
+            if src:
+                # Ensure it's a full URL
+                if src.startswith("//"):
+                    src = "https:" + src
+                elif src.startswith("/"):
+                    src = f"https://www.aliexpress.com{src}"
+                image_links.append(src)
+    
+    return image_links
+
+
+
 def extract_text_with_selectors(element, selectors, attribute=None):
     """Try multiple selectors to extract text from an element"""
     for selector in selectors:
@@ -375,33 +404,39 @@ def clean_text(text):
     if not text:
         return ""
     # Remove extra whitespace and newlines
-    text = ' '.join(text.split())
+    text = ''.join(text)
     # Limit length to avoid overly long titles
-    if len(text) > 200:
-        text = text[:200] + "..."
+    # if len(text) > 200:
+    #     text = text[:200] + "..."
     return text
 
 
 def main():
     print(f"-> AliExpress Scrapper : {bc.OKGREEN}Start{bc.DEFAULT}")
     
-    # First try the selenium approach
-    html_page = get_url_page()
-    if html_page:
-        soup_object = BeautifulSoup(html_page, 'html.parser')
-        scrap_products(soup_object)
-    
-    # Export results
-    export_data_to_csv()
-    
+    for page_num in range(1, 61):  # Iterate from page 1 to 60
+        print(f"-> AliExpress Scrapper : Scraping page {page_num}...")
+        global url
+        url = f"https://www.aliexpress.com/w/wholesale-{kw}.html?page={page_num}&g=y&SearchText={kw}"
+        
+        html_page = get_url_page(url)
+        if html_page:
+            soup_object = BeautifulSoup(html_page, 'html.parser')
+            scrap_products(soup_object)
+            # Export results after all pages are scraped
+            export_data_to_csv()
+        else:
+            print(f"-> AliExpress Scrapper : Failed to load page {page_num}")
+            
+
     print(f"-> AliExpress Scrapper : {bc.OKGREEN}Completed successfully!{bc.DEFAULT}")
     print(f"-> Total products: {len(products)}")
-    
+
     # Show sample of what we collected
     if products:
-        print(f"\\n-> Sample products:")
+        print(f"\n-> Sample products:")
         for i, product in enumerate(products[:3], 1):
             print(f"   {i}. {product.title[:50]}... - {product.price}")
 
 if __name__ == "__main__":
-    main()
+    main()  
