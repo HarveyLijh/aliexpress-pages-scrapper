@@ -217,6 +217,5 @@ If you encounter any issues or have questions:
 2. Review the generated `page_source.html` for debugging
 3. Open an issue on the GitHub repository
 
----
 
 **Disclaimer**: This tool is for educational and research purposes only. Users are responsible for ensuring their use complies with applicable laws and website terms of service.
