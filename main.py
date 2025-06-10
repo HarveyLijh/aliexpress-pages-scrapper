@@ -7,22 +7,40 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from time import sleep
 import random
 
-# Search for electronics products on AliExpress
-kw='headphones'
-num=1
-url = f"https://www.aliexpress.com/w/wholesale-{kw}.html?page={num}&g=y&SearchText=electronics"
+# Search for various product categories on AliExpress
+keywords = [
+    'headphones',
+    'laptops', 
+    'garden supplies',
+    'phone cases',
+    'led lights',
+    'kitchen gadgets',
+    'fitness tracker',
+    'bluetooth speaker',
+    'gaming mouse',
+    'home decor'
+]
+
 products = []
 
 def export_data_to_csv():
     global products
-    data = {"Title": [], "Rev_Rate": [], "Sold": [], "Shipping": [], "Price": [], "Image": []}
+    data = {"Keyword": [], "Title": [], "Rev_Rate": [], "Sold": [], "Shipping": [], "Price": [], "Image": []}
     for product in products:
+        # Try to extract keyword from product title or set as unknown
+        keyword_found = "Unknown"
+        for kw in keywords:
+            if any(word.lower() in product.title.lower() for word in kw.split()):
+                keyword_found = kw
+                break
+        
+        data["Keyword"].append(keyword_found)
         data["Title"].append(product.title)
         data["Rev_Rate"].append(product.rev_rate)
         data["Sold"].append(product.Sold)
@@ -31,11 +49,13 @@ def export_data_to_csv():
         data["Image"].append(product.image_link if hasattr(product, 'image_link') else "N/A")
     df = pd.DataFrame(data)
     df.to_csv('aliexpress_products.csv', index=False)
+    print(f"-> AliExpress Scrapper : Exported {len(products)} products to aliexpress_products.csv")
 
 
 def get_url_page(url):
     options = Options()
-    options.headless = False
+    # Remove headless argument entirely to show the browser window
+    # options.add_argument('--headless')  # Commented out to show browser
     
     # Enhanced anti-detection measures
     options.add_argument('--no-sandbox')
@@ -149,6 +169,11 @@ def scrap_products(soup_object):
     global products
     print(f"-> AliExpress Scrapper : Looking for products...")
     
+    # Keep track of existing product titles to prevent duplicates
+    existing_titles = {product.title.lower().strip() for product in products}
+    duplicates_found = 0
+    new_products_added = 0
+    
     # Debug: Save HTML to file for inspection
     with open('page_source.html', 'w', encoding='utf-8') as f:
         f.write(str(soup_object))
@@ -193,7 +218,7 @@ def scrap_products(soup_object):
 
             image_links=extract_image_links(product_element)
 
-            # Clean and validate extracted data
+            # Clean and validate extracted data - keep full title without truncation
             title_text = clean_text(title_text) if title_text else f"Product {i+1}"
             price_text = clean_text(price_text) if price_text else "N/A"
             rating_text = clean_text(rating_text) if rating_text else "N/A"
@@ -201,18 +226,25 @@ def scrap_products(soup_object):
             orders_text = clean_text(orders_text) if orders_text else "N/A"
             image_links_text = f'[{", ".join(image_links)}]' if image_links else "N/A"
 
-            # Only add products with meaningful data
-            if title_text and title_text != f"Product {i+1}":
+            # Check for duplicates and only add products with meaningful, unique data
+            title_normalized = title_text.lower().strip()
+            if title_text and title_text != f"Product {i+1}" and not is_duplicate_title(title_text, existing_titles):
                 product_object = Product(title_text, rating_text, orders_text, shipping_text, price_text, image_links_text)
                 product_object.description()
                 products.append(product_object)
-                print(f"-> Extracted: {title_text[:50]}... - {price_text}")
+                existing_titles.add(title_normalized)  # Add to set to prevent future duplicates
+                new_products_added += 1
+                print(f"-> Extracted: {title_text[:80]}... - {price_text}")
+            elif is_duplicate_title(title_text, existing_titles):
+                duplicates_found += 1
+                print(f"-> Skipped duplicate: {title_text[:50]}...")
                 
         except Exception as e:
             print(f"-> Error extracting product {i}: {e}")
             continue
             
-    print(f"-> AliExpress Scrapper : Successfully extracted {len(products)} products")
+    print(f"-> AliExpress Scrapper : Added {new_products_added} new products, skipped {duplicates_found} duplicates")
+    print(f"-> AliExpress Scrapper : Total unique products now: {len(products)}")
 
 
 def extract_product_title(element):
@@ -400,43 +432,89 @@ def extract_text_with_selectors(element, selectors, attribute=None):
 
 
 def clean_text(text):
-    """Clean and normalize extracted text"""
+    """Clean and normalize extracted text while preserving full content"""
     if not text:
         return ""
-    # Remove extra whitespace and newlines
-    text = ''.join(text)
-    # Limit length to avoid overly long titles
-    # if len(text) > 200:
-    #     text = text[:200] + "..."
+    # Remove extra whitespace and newlines but keep full content
+    if isinstance(text, list):
+        text = ' '.join(str(item) for item in text)
+    else:
+        text = str(text)
+    
+    # Clean up whitespace but preserve full title
+    text = ' '.join(text.split())  # Removes extra spaces and newlines
     return text
+
+
+def is_duplicate_title(new_title, existing_titles, similarity_threshold=0.9):
+    """
+    Check if a title is a duplicate based on similarity
+    Uses simple string matching and length comparison
+    """
+    new_title_clean = new_title.lower().strip()
+    
+    # Exact match check
+    if new_title_clean in existing_titles:
+        return True
+    
+    # Check for very similar titles (accounting for minor variations)
+    for existing_title in existing_titles:
+        # If titles are very similar in length and content
+        if len(new_title_clean) > 10 and len(existing_title) > 10:
+            # Simple similarity check - count matching words
+            new_words = set(new_title_clean.split())
+            existing_words = set(existing_title.split())
+            
+            if len(new_words) > 0 and len(existing_words) > 0:
+                common_words = new_words.intersection(existing_words)
+                similarity = len(common_words) / max(len(new_words), len(existing_words))
+                
+                if similarity >= similarity_threshold:
+                    return True
+    
+    return False
 
 
 def main():
     print(f"-> AliExpress Scrapper : {bc.OKGREEN}Start{bc.DEFAULT}")
+    global products
+    products = []  # Reset products list
     
-    for page_num in range(1, 61):  # Iterate from page 1 to 60
-        print(f"-> AliExpress Scrapper : Scraping page {page_num}...")
-        global url
-        url = f"https://www.aliexpress.com/w/wholesale-{kw}.html?page={page_num}&g=y&SearchText={kw}"
+    for keyword in keywords:
+        print(f"-> AliExpress Scrapper : {bc.OKBLUE}Scraping keyword: {keyword}{bc.DEFAULT}")
         
-        html_page = get_url_page(url)
-        if html_page:
-            soup_object = BeautifulSoup(html_page, 'html.parser')
-            scrap_products(soup_object)
-            # Export results after all pages are scraped
-            export_data_to_csv()
-        else:
-            print(f"-> AliExpress Scrapper : Failed to load page {page_num}")
+        # Scrape first 5 pages for each keyword to get variety without being too intensive
+        for page_num in range(1, 6):
+            print(f"-> AliExpress Scrapper : Scraping {keyword} - page {page_num}...")
             
-
-    print(f"-> AliExpress Scrapper : {bc.OKGREEN}Completed successfully!{bc.DEFAULT}")
-    print(f"-> Total products: {len(products)}")
-
-    # Show sample of what we collected
+            url = f"https://www.aliexpress.com/w/wholesale-{keyword.replace(' ', '%20')}.html?page={page_num}&g=y"
+            
+            html_page = get_url_page(url)
+            if html_page:
+                soup_object = BeautifulSoup(html_page, 'html.parser')
+                scrap_products(soup_object)
+                
+                # Add a small delay between pages to be respectful
+                sleep(2)
+            else:
+                print(f"-> AliExpress Scrapper : Failed to load {keyword} page {page_num}")
+        
+        # Add delay between different keywords
+        print(f"-> AliExpress Scrapper : Completed {keyword}. Total products so far: {len(products)}")
+        sleep(5)
+    
+    # Export all results after scraping all keywords
     if products:
+        export_data_to_csv()
+        print(f"-> AliExpress Scrapper : {bc.OKGREEN}Completed successfully!{bc.DEFAULT}")
+        print(f"-> Total products: {len(products)}")
+
+        # Show sample of what we collected
         print(f"\n-> Sample products:")
-        for i, product in enumerate(products[:3], 1):
+        for i, product in enumerate(products[:5], 1):
             print(f"   {i}. {product.title[:50]}... - {product.price}")
+    else:
+        print(f"-> AliExpress Scrapper : {bc.WARNING}No products were scraped{bc.DEFAULT}")
 
 if __name__ == "__main__":
-    main()  
+    main()
